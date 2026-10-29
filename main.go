@@ -27,8 +27,9 @@ import (
 
 const (
 	rate          = 44100
-	bytesPerFrame = 8    // two float32 channels
-	playerFrames  = 2048 // about 46 ms read ahead of what is heard
+	channels      = 2
+	bytesPerFrame = channels * 4 // a float32 sample per channel
+	playerFrames  = 2048         // about 46 ms read ahead of what is heard
 	silence       = 0.0001
 
 	groupTick   = 0
@@ -68,23 +69,12 @@ func run(quiet bool) error {
 		return err
 	}
 
-	audio, ready, err := oto.NewContext(&oto.NewContextOptions{
-		SampleRate:   rate,
-		ChannelCount: 2,
-		Format:       oto.FormatFloat32LE,
-	})
-	if err != nil {
-		return fmt.Errorf("open audio: %w", err)
-	}
-
-	<-ready
-
 	mix := &mixer{}
-	player := audio.NewPlayer(mix)
-	// oto would otherwise read half a second at a time, so a sound
-	// scheduled now would be heard up to a second late.
-	player.SetBufferSize(playerFrames * bytesPerFrame)
-	player.Play()
+
+	audio, player, err := openPlayer(mix)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -116,6 +106,30 @@ func run(quiet bool) error {
 			tick(mix, &snd, clock, at, quiet)
 		}
 	}
+}
+
+// openPlayer opens the sound device and starts it playing mix. oto closes a
+// player once it is collected, so the caller must keep it reachable for as
+// long as it should play.
+func openPlayer(mix *mixer) (*oto.Context, *oto.Player, error) {
+	audio, ready, err := oto.NewContext(&oto.NewContextOptions{
+		SampleRate:   rate,
+		ChannelCount: channels,
+		Format:       oto.FormatFloat32LE,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("open audio: %w", err)
+	}
+
+	<-ready
+
+	player := audio.NewPlayer(mix)
+	// oto would otherwise read half a second at a time, so a sound
+	// scheduled now would be heard up to a second late.
+	player.SetBufferSize(playerFrames * bytesPerFrame)
+	player.Play()
+
+	return audio, player, nil
 }
 
 // tick is one second of the clock: a beat of the pendulum, then a strike if
