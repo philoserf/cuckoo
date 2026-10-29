@@ -106,6 +106,13 @@ func run(quiet bool) error {
 
 			return nil
 		case at := <-timer.C:
+			// oto's errors are fatal: a failed device never plays again, so
+			// exit rather than keep time in silence.
+			err := errors.Join(audio.Err(), player.Err())
+			if err != nil {
+				return fmt.Errorf("audio: %w", err)
+			}
+
 			tick(mix, &snd, clock, at, quiet)
 		}
 	}
