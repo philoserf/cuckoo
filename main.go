@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -154,19 +153,19 @@ func tick(mix *mixer, snd *sounds, clock *striker, at time.Time, quiet bool) {
 // its bearings, so a quarter already underway at startup is not replayed,
 // and a boundary is struck once however often it is read.
 type striker struct {
-	held   string
+	held   int // the boundary last struck or held, in minutes since midnight; -1 for none
 	opened bool
 }
 
 func (s *striker) strike(at time.Time) (int, int) {
 	hour, minute, second := at.Clock()
 	boundary := second == 0 && minute%15 == 0
-	key := strconv.Itoa(hour) + ":" + strconv.Itoa(minute)
+	key := hour*60 + minute
 
 	switch {
 	case !s.opened:
 		s.opened = true
-		s.held = ""
+		s.held = -1
 
 		if boundary {
 			s.held = key
@@ -174,7 +173,7 @@ func (s *striker) strike(at time.Time) (int, int) {
 
 		return 0, 0
 	case !boundary:
-		s.held = ""
+		s.held = -1
 
 		return 0, 0
 	case s.held == key:
