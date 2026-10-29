@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Tic-tok keeps time:** each beat is placed on the frame that answers to its wall-clock second, so beats sound a second apart. Before, a beat went wherever oto's last read had left the mixer, so successive beats strayed by up to 46 ms.
+
 ## 0.1.0
 
 The first release: a cuckoo clock for the terminal, heard and not seen.
