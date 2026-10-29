@@ -193,6 +193,15 @@ func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
 	mix.replace(groupStrike, strike)
 }
 
+// The chime rods, named by pitch. Each name is the rod's index in
+// sounds.rods, and loadSounds tunes each rod by its name.
+const (
+	gSharp4 = iota
+	fSharp4
+	e4
+	b3
+)
+
 // note is one strike of a chime rod, at seconds from the start of a quarter.
 type note struct {
 	at  float64
@@ -202,8 +211,6 @@ type note struct {
 // quarter lays out the Westminster phrases for a quarter: when each note
 // sounds, which rod it strikes, and when the last note has rung out.
 func quarter(count int) ([]note, float64) {
-	const gSharp4, fSharp4, e4, b3 = 0, 1, 2, 3
-
 	phrases := [][]int{
 		{gSharp4, fSharp4, e4, b3},
 		{e4, gSharp4, fSharp4, b3},
@@ -245,11 +252,18 @@ func loadSounds() (sounds, error) {
 		return sounds{}, err
 	}
 
+	pitches := [4]float64{gSharp4: 415.3, fSharp4: 369.99, e4: 329.63, b3: 246.94}
+
+	var rods [4][]float32
+	for i, frequency := range pitches {
+		rods[i] = rod(frequency)
+	}
+
 	return sounds{
 		tic:  click(),
 		tok:  knock(),
 		call: call,
-		rods: [4][]float32{rod(415.3), rod(369.99), rod(329.63), rod(246.94)},
+		rods: rods,
 	}, nil
 }
 
@@ -309,7 +323,7 @@ func knock() []float32 {
 // the lowest one slowest.
 func rod(frequency float64) []float32 {
 	partials := []struct{ ratio, amp, decay float64 }{
-		{1, 0.35, 2.6},
+		{1, 0.35, ring}, // the fundamental rings longest, and sets how long a rod sounds
 		{2.003, 0.21, 1.5},
 		{2.76, 0.079, 0.3},
 		{2.99, 0.053, 0.45},

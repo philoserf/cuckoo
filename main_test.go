@@ -60,7 +60,7 @@ func TestStrikeOpensOffBoundary(t *testing.T) {
 func TestQuarter(t *testing.T) {
 	t.Parallel()
 
-	const gs, fs, e, b = 0, 1, 2, 3
+	const gs, fs, e, b = gSharp4, fSharp4, e4, b3
 
 	tests := []struct {
 		name  string
