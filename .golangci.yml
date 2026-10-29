@@ -38,15 +38,15 @@ linters:
     govet:
       enable-all: true
     varnamelen:
-      # 15 findings at the defaults. Configured rather than disabled: the
-      # linter still catches an anonymous name used far from where it was
+      # 19 findings with this list emptied. Configured rather than disabled:
+      # the linter still catches an anonymous name used far from where it was
       # declared.
       ignore-names:
         # Note names: the rods' pitches.
         [b, b3, e, e4, fs, gs,
-         # Ordinary Go and signal notation: index, sample, time, voice,
-         # buffer or partial, note, test case, the ramp's endpoints and instant.
-         at, i, n, p, s, t, tc, to, v]
+         # Ordinary Go and signal notation: index, time, voice, buffer or
+         # partial, note, test case, the ramp's target and instant.
+         at, i, n, p, t, tc, to, v]
     nolintlint:
       require-explanation: true
       require-specific: true
