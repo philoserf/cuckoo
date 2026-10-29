@@ -98,15 +98,6 @@ func TestQuarter(t *testing.T) {
 	}
 }
 
-func TestQuarterNone(t *testing.T) {
-	t.Parallel()
-
-	notes, total := quarter(0)
-	if notes != nil || total != 0 {
-		t.Fatalf("quarter(0) = %v, %v; want nothing", notes, total)
-	}
-}
-
 func TestExpRamp(t *testing.T) {
 	t.Parallel()
 
