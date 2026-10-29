@@ -10,18 +10,14 @@ linters:
     - wsl # replaced by wsl_v5
     - gomodguard # replaced by gomodguard_v2
 
-    # Everything below was measured rather than assumed, and the count is
-    # part of the reason.
-
-    # 24 findings. The sounds are transcribed from the browser clock: 2140 Hz
-    # for the tic, a 3.5 ms decay, a partial at 2.76 times the fundamental.
-    # Naming each one would rename the recipe; the number is the sound.
+    # The sounds are transcribed from the browser clock: 2140 Hz for the tic,
+    # a 3.5 ms decay, a partial at 2.76 times the fundamental. Naming each one
+    # would rename the recipe; the number is the sound.
     - mnd
 
-    # 15 findings, and the linter takes no settings. Every one is a zero-value
-    # struct the code relies on (a fresh mixer or striker), oto's options
-    # left at their defaults, or a test table naming only the fields its case
-    # exercises.
+    # The linter takes no settings. Every finding is a zero-value struct the
+    # code relies on (a fresh mixer or striker), oto's options left at their
+    # defaults, or a test table naming only the fields its case exercises.
     - exhaustruct_v5
 
   settings:
@@ -38,9 +34,8 @@ linters:
     govet:
       enable-all: true
     varnamelen:
-      # 19 findings with this list emptied. Configured rather than disabled:
-      # the linter still catches an anonymous name used far from where it was
-      # declared.
+      # Configured rather than disabled: the linter still catches an anonymous
+      # name used far from where it was declared.
       ignore-names:
         # Note names: the rods' pitches.
         [b, b3, e, e4, fs, gs,
@@ -58,7 +53,7 @@ linters:
       - std-error-handling
     rules:
       # G602 reads equal's index into want as out of range; the length check
-      # above it rules that out. (1 finding.)
+      # above it rules that out.
       - path: _test\.go
         linters:
           - gosec
