@@ -399,6 +399,7 @@ func TestListen(t *testing.T) {
 
 	mix := &mixer{}
 	player := audio.NewPlayer(mix)
+	player.SetBufferSize(playerFrames * bytesPerFrame)
 	player.Play()
 
 	for beat := range 4 {

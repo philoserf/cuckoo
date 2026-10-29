@@ -27,7 +27,8 @@ import (
 
 const (
 	rate          = 44100
-	bytesPerFrame = 8 // two float32 channels
+	bytesPerFrame = 8    // two float32 channels
+	playerFrames  = 2048 // about 46 ms read ahead of what is heard
 	silence       = 0.0001
 
 	groupTick   = 0
@@ -80,6 +81,9 @@ func run(quiet bool) error {
 
 	mix := &mixer{}
 	player := audio.NewPlayer(mix)
+	// oto would otherwise read half a second at a time, so a sound
+	// scheduled now would be heard up to a second late.
+	player.SetBufferSize(playerFrames * bytesPerFrame)
 	player.Play()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
