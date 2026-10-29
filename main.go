@@ -29,7 +29,7 @@ const (
 	rate          = 44100
 	channels      = 2
 	bytesPerFrame = channels * 4 // a float32 sample per channel
-	playerFrames  = 2048         // about 46 ms read ahead of what is heard
+	playerFrames  = 2048         // what oto reads at a time: sounds land on a 46 ms grid
 	silence       = 0.0001
 
 	groupTick   = 0
@@ -124,8 +124,11 @@ func openPlayer(mix *mixer) (*oto.Context, *oto.Player, error) {
 	<-ready
 
 	player := audio.NewPlayer(mix)
-	// oto would otherwise read half a second at a time, so a sound
-	// scheduled now would be heard up to a second late.
+	// oto reads the mixer a player buffer at a time and keeps up to two
+	// queued, and its default buffer is half a second: every sound would land
+	// on a half-second grid and be heard up to a second late. With
+	// playerFrames, and macOS's own queue of four 1536-frame buffers behind
+	// it, a sound is heard roughly 0.1–0.23 s after it is scheduled.
 	player.SetBufferSize(playerFrames * bytesPerFrame)
 	player.Play()
 
