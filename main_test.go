@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-
-	"github.com/ebitengine/oto/v3"
 )
 
 func at(hour, minute, second int) time.Time {
@@ -438,21 +436,12 @@ func TestListen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	audio, ready, err := oto.NewContext(&oto.NewContextOptions{
-		SampleRate:   rate,
-		ChannelCount: 2,
-		Format:       oto.FormatFloat32LE,
-	})
+	mix := &mixer{}
+
+	_, player, err := openPlayer(mix)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	<-ready
-
-	mix := &mixer{}
-	player := audio.NewPlayer(mix)
-	player.SetBufferSize(playerFrames * bytesPerFrame)
-	player.Play()
 
 	for beat := range 4 {
 		sound := snd.tic
