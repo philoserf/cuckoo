@@ -390,21 +390,15 @@ func decodeCall(data []byte) ([]float32, error) {
 		return nil, fmt.Errorf("decode cuckoo.mp3: %w", err)
 	}
 
-	// go-mp3 always decodes to interleaved stereo, signed 16-bit little-endian.
-	stereo := make([]int16, len(pcm)/2)
-
-	err = binary.Read(bytes.NewReader(pcm), binary.LittleEndian, stereo)
-	if err != nil {
-		return nil, fmt.Errorf("decode cuckoo.mp3: %w", err)
-	}
-
-	frames := min(len(stereo)/2, int(callSeconds*rate))
+	// go-mp3 always decodes to interleaved stereo, signed 16-bit little-endian:
+	// four bytes a frame.
+	frames := min(len(pcm)/4, int(callSeconds*rate))
 	duration := float64(frames) / rate
 	release := max(0.06, duration-0.12)
 	out := make([]float32, frames)
 
 	for i := range out {
-		mono := (float64(stereo[2*i]) + float64(stereo[2*i+1])) / 2 / math.MaxInt16
+		mono := (sample(pcm[4*i:]) + sample(pcm[4*i+2:])) / 2 / math.MaxInt16
 
 		t := float64(i) / rate
 
@@ -419,6 +413,16 @@ func decodeCall(data []byte) ([]float32, error) {
 	}
 
 	return out, nil
+}
+
+// sample reads one signed 16-bit little-endian sample.
+func sample(b []byte) float64 {
+	v := float64(binary.LittleEndian.Uint16(b))
+	if v >= 1<<15 {
+		v -= 1 << 16
+	}
+
+	return v
 }
 
 // cue is a sound to schedule, at seconds from the mixer's clock.
