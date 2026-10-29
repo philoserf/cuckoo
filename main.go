@@ -32,9 +32,6 @@ const (
 	playerFrames  = 2048         // what oto reads at a time: sounds land on a 46 ms grid
 	silence       = 0.0001
 
-	groupTick   = 0
-	groupStrike = 1
-
 	noteSeconds   = 0.72
 	phraseSeconds = 3.52
 	chimeLead     = 0.05
@@ -144,7 +141,7 @@ func tick(mix *mixer, snd *sounds, clock *striker, at time.Time, quiet bool) {
 			beat = snd.tok
 		}
 
-		mix.schedule(beat, 0, groupTick)
+		mix.schedule(beat, 0)
 	}
 
 	chimes, cuckoos := clock.strike(at)
@@ -214,7 +211,7 @@ func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
 		strike = append(strike, cue{samples: snd.call, at: at})
 	}
 
-	mix.replace(groupStrike, strike)
+	mix.replace(strike)
 }
 
 // The chime rods, named by pitch. Each name is the rod's index in
@@ -434,7 +431,7 @@ type cue struct {
 type voice struct {
 	samples []float32
 	start   int64
-	group   int
+	strike  bool
 }
 
 // mixer is the clock's sound card: it adds up whatever is scheduled and
@@ -485,24 +482,24 @@ func (m *mixer) Read(p []byte) (int, error) {
 	return frames * bytesPerFrame, nil
 }
 
-func (m *mixer) schedule(samples []float32, at float64, group int) {
+func (m *mixer) schedule(samples []float32, at float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.add(cue{samples: samples, at: at}, group)
+	m.add(cue{samples: samples, at: at}, false)
 }
 
-// replace cuts short everything sounding in group and schedules cues in its
-// place. It holds the lock throughout, so every cue is placed against the
+// replace cuts short the strike sounding, if any, and schedules a new one in
+// its place. It holds the lock throughout, so every cue is placed against the
 // same frame and no Read can land between them.
-func (m *mixer) replace(group int, cues []cue) {
+func (m *mixer) replace(cues []cue) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	kept := m.voices[:0]
 
 	for _, v := range m.voices {
-		if v.group != group {
+		if !v.strike {
 			kept = append(kept, v)
 		}
 	}
@@ -510,13 +507,13 @@ func (m *mixer) replace(group int, cues []cue) {
 	m.voices = kept
 
 	for _, c := range cues {
-		m.add(c, group)
+		m.add(c, true)
 	}
 }
 
 // add places a cue at seconds from the mixer's clock. The caller holds the
 // lock.
-func (m *mixer) add(c cue, group int) {
+func (m *mixer) add(c cue, strike bool) {
 	start := m.pos + int64(math.Round(c.at*rate))
-	m.voices = append(m.voices, voice{samples: c.samples, start: start, group: group})
+	m.voices = append(m.voices, voice{samples: c.samples, start: start, strike: strike})
 }

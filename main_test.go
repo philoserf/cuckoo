@@ -222,27 +222,27 @@ func TestMixer(t *testing.T) {
 		{
 			name: "overlapping voices add",
 			setup: func(m *mixer) {
-				m.schedule([]float32{0.1, 0.1, 0.1}, 0, groupTick)
-				m.schedule([]float32{0.2, 0.2}, 1.0/rate, groupStrike)
+				m.schedule([]float32{0.1, 0.1, 0.1}, 0)
+				m.schedule([]float32{0.2, 0.2}, 1.0/rate)
 			},
 			want: []float32{0.1, 0.3, 0.3, 0, 0},
 		},
 		{
-			name: "replace cuts short only its group",
+			name: "replace cuts short only the strike",
 			setup: func(m *mixer) {
-				m.schedule([]float32{0.1, 0.1}, 0, groupTick)
-				m.schedule([]float32{0.5, 0.5}, 0, groupStrike)
-				m.replace(groupStrike, []cue{{samples: []float32{0.2}, at: 1.0 / rate}})
+				m.schedule([]float32{0.1, 0.1}, 0)
+				m.replace([]cue{{samples: []float32{0.5, 0.5}, at: 0}})
+				m.replace([]cue{{samples: []float32{0.2}, at: 1.0 / rate}})
 			},
 			want: []float32{0.1, 0.3, 0, 0, 0},
 		},
 		{
 			name: "loud sums clip",
 			setup: func(m *mixer) {
-				m.schedule([]float32{0.8}, 0, groupTick)
-				m.schedule([]float32{0.8}, 0, groupStrike)
-				m.schedule([]float32{-0.9, -0.9}, 2.0/rate, groupStrike)
-				m.schedule([]float32{-0.9, -0.9}, 2.0/rate, groupStrike)
+				m.schedule([]float32{0.8}, 0)
+				m.schedule([]float32{0.8}, 0)
+				m.schedule([]float32{-0.9, -0.9}, 2.0/rate)
+				m.schedule([]float32{-0.9, -0.9}, 2.0/rate)
 			},
 			want: []float32{1, 0, -1, -1, 0},
 		},
@@ -270,7 +270,7 @@ func TestMixerSpansReads(t *testing.T) {
 	t.Parallel()
 
 	mix := &mixer{}
-	mix.schedule([]float32{0.1, 0.2, 0.3, 0.4}, 1.0/rate, groupTick)
+	mix.schedule([]float32{0.1, 0.2, 0.3, 0.4}, 1.0/rate)
 
 	if got := frames(t, mix, 3); !equal(got, []float32{0, 0.1, 0.2}) {
 		t.Fatalf("first read %v", got)
@@ -285,7 +285,7 @@ func TestMixerSpansReads(t *testing.T) {
 	}
 
 	// A sound scheduled now starts at the mixer's current frame.
-	mix.schedule([]float32{0.5}, 0, groupTick)
+	mix.schedule([]float32{0.5}, 0)
 
 	if got := frames(t, mix, 1); !equal(got, []float32{0.5}) {
 		t.Fatalf("third read %v", got)
@@ -340,7 +340,7 @@ func TestPerformCutsShort(t *testing.T) {
 	}
 
 	mix := &mixer{}
-	mix.schedule(snd.tic, 0, groupTick)
+	mix.schedule(snd.tic, 0)
 	perform(mix, &snd, 4, 12)
 	perform(mix, &snd, 1, 0)
 
@@ -440,7 +440,7 @@ func TestListen(t *testing.T) {
 			sound = snd.tok
 		}
 
-		mix.schedule(sound, float64(beat), groupTick)
+		mix.schedule(sound, float64(beat))
 	}
 
 	perform(mix, &snd, 4, 3)
