@@ -45,7 +45,7 @@ const (
 //go:embed cuckoo.mp3
 var cuckooMP3 []byte
 
-var errSampleRate = errors.New("cuckoo.mp3 is not 44.1 kHz")
+var errSampleRate = fmt.Errorf("cuckoo.mp3 is not %d Hz", rate)
 
 func main() {
 	quiet := flag.Bool("quiet", false, "mute the pendulum's tic-tok")
@@ -378,7 +378,7 @@ func decodeCall(data []byte) ([]float32, error) {
 	}
 
 	if decoder.SampleRate() != rate {
-		return nil, errSampleRate
+		return nil, fmt.Errorf("%w: got %d Hz", errSampleRate, decoder.SampleRate())
 	}
 
 	pcm, err := io.ReadAll(decoder)
