@@ -22,6 +22,6 @@ One file, `main.go`, in `package main`:
 - `quarter` lays out the Westminster phrases. `perform` schedules them and the cuckoo, cutting short any strike still sounding.
 - Each sound is rendered once at startup to mono float32 at 44.1 kHz, the rate of the embedded `cuckoo.mp3`. `expRamp` is Web Audio's exponential ramp, which every envelope uses.
 - `openPlayer` opens the sound device for both `run` and `TestListen`. oto closes a player once it is garbage collected, so each caller keeps it alive. oto's errors are fatal, so `run` checks them every second and exits on one.
-- `mixer` is an `io.Reader` that oto pulls interleaved stereo from. Its clock is the number of frames it has handed over, so sounds keep exact time relative to each other.
+- `mixer` is an `io.Reader` that oto pulls interleaved stereo from. Its clock is the number of frames it has handed over, so sounds keep exact time relative to each other. oto reads in bursts, so each read also takes a bearing on the wall clock, and `frame` places a wall-clock second on the frame that answers to it. Placing a beat at `mixer.pos` instead puts it up to a read off the second.
 
 The sounds, the timings and the strike rules are ported from the browser cuckoo clock in TypeScript, keeping its numbers. One deliberate change: tic-tok follows the wall-clock second instead of a pendulum's own swing.

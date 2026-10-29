@@ -237,7 +237,7 @@ func openPlayer(mix *mixer) (*oto.Context, *oto.Player, error) {
 }
 ```
 
-The player reads from the mixer for as long as the program runs. `SetBufferSize` sets how much oto asks for in each read: `playerFrames` (2048 frames, about 46 ms). That size is the grid every sound lands on, because the mixer's clock only moves when oto reads. With oto's own queue and the macOS AudioQueue behind it, a sound is heard roughly 0.1–0.23 s after it is scheduled. oto closes a player once it is garbage collected, so `openPlayer` returns it and leaves keeping it alive to the caller.
+The player reads from the mixer for as long as the program runs. `SetBufferSize` sets how much oto asks for in each read: `playerFrames` (2048 frames, about 46 ms). The mixer's clock only moves when oto reads, so it jumps that much at a time, and the mixer takes bearings on the wall clock to place sounds between the jumps. With oto's own queue and the macOS AudioQueue behind it, a sound is heard roughly 0.1–0.23 s after it is scheduled. oto closes a player once it is garbage collected, so `openPlayer` returns it and leaves keeping it alive to the caller.
 
 ### Taking bearings and starting the loop
 
@@ -250,8 +250,11 @@ The player reads from the mixer for as long as the program runs. `SetBufferSize`
 	clock.strike(time.Now())
 
 	for {
+		// next keeps now's monotonic reading, so the mixer can place the beat
+		// against oto's reads to the frame.
 		now := time.Now()
-		timer := time.NewTimer(time.Until(now.Truncate(time.Second).Add(time.Second)))
+		next := now.Add(time.Second - time.Duration(now.Nanosecond()))
+		timer := time.NewTimer(time.Until(next))
 
 		select {
 		case <-ctx.Done():
@@ -262,7 +265,7 @@ The player reads from the mixer for as long as the program runs. `SetBufferSize`
 			runtime.KeepAlive(player)
 
 			return nil
-		case at := <-timer.C:
+		case <-timer.C:
 			// oto's errors are fatal: a failed device never plays again, so
 			// exit rather than keep time in silence.
 			err := errors.Join(audio.Err(), player.Err())
@@ -270,12 +273,12 @@ The player reads from the mixer for as long as the program runs. `SetBufferSize`
 				return fmt.Errorf("audio: %w", err)
 			}
 
-			tick(mix, &snd, clock, at, quiet)
+			tick(mix, &snd, clock, next, quiet)
 		}
 	}
 ```
 
-Each pass sets a fresh timer for the next whole wall-clock second. It doesn't use a `time.Ticker`, so a late timer, a clock adjustment or a wake from sleep is corrected on the next pass.
+Each pass sets a fresh timer for the next whole wall-clock second and hands `tick` that second, not the moment the timer fired. It doesn't use a `time.Ticker`, so a late timer, a clock adjustment or a wake from sleep is corrected on the next pass.
 
 There are two ways out:
 
@@ -284,24 +287,26 @@ There are two ways out:
 
 ### One second: `tick`
 
-`tick` is a beat of the pendulum, then a strike if this second opens a quarter. Even seconds tic and odd seconds tok. A beat is scheduled at `0`, meaning the mixer's current frame.
+`tick` is a beat of the pendulum, then a strike if this second opens a quarter. Even seconds tic and odd seconds tok. The beat and the strike both start from `origin`, the frame `mixer.frame` places the second on, so beats a second apart sound a second apart.
 
 `main.go` — `tick`
 
 ```go
 func tick(mix *mixer, snd *sounds, clock *striker, at time.Time, quiet bool) {
+	origin := mix.frame(at)
+
 	if !quiet {
 		beat := snd.tic
 		if at.Second()%2 == 1 {
 			beat = snd.tok
 		}
 
-		mix.schedule(beat, 0)
+		mix.schedule(origin, beat)
 	}
 
 	chimes, cuckoos := clock.strike(at)
 	if chimes > 0 {
-		perform(mix, snd, chimes, cuckoos)
+		perform(mix, snd, origin, chimes, cuckoos)
 	}
 }
 ```
@@ -376,7 +381,7 @@ The first line is the bearings reading. The repeated 10:15:00 is held. The strik
 `main.go` — `perform`
 
 ```go
-func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
+func perform(mix *mixer, snd *sounds, origin int64, chimes, cuckoos int) {
 	notes, total := quarter(chimes)
 	strike := make([]cue, 0, len(notes)+cuckoos)
 
@@ -390,7 +395,7 @@ func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
 		strike = append(strike, cue{samples: snd.call, at: at})
 	}
 
-	mix.replace(strike)
+	mix.replace(origin, strike)
 }
 ```
 
@@ -442,14 +447,16 @@ For the hour, the cuckoo waits for the chime to ring out, then for `doorSeconds`
 
 ### Scheduling: `mixer.replace`, `schedule` and `add`
 
-A `cue` is a sound and a start time in seconds from the mixer's clock. Once scheduled, it becomes a `voice` with an absolute start frame and a `strike` flag.
+A `cue` is a sound and a start time in seconds from an origin frame. Once scheduled, it becomes a `voice` with an absolute start frame and a `strike` flag.
 
 `main.go` — `mixer.replace`
 
 ```go
-func (m *mixer) replace(cues []cue) {
+func (m *mixer) replace(origin int64, cues []cue) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	origin = max(origin, m.pos)
 
 	kept := m.voices[:0]
 
@@ -462,18 +469,18 @@ func (m *mixer) replace(cues []cue) {
 	m.voices = kept
 
 	for _, c := range cues {
-		m.add(c, true)
+		m.add(origin, c, true)
 	}
 }
 ```
 
-`replace` drops every strike voice, cutting short a strike still sounding, and places the new cues, all under one lock. Every cue is measured from the same `m.pos`, so oto can't read between two notes and push the rest of the strike late. `schedule`, used for the beat, places a single cue the same way. Both convert seconds to an absolute frame in `add`:
+`replace` drops every strike voice, cutting short a strike still sounding, and places the new cues, all under one lock. Every cue is measured from the same origin, moved up to `m.pos` if oto has already handed it over, so oto can't read between two notes and push the rest of the strike late. `schedule`, used for the beat, places a single cue the same way. Both convert seconds to an absolute frame in `add`:
 
 `main.go` — `mixer.add`
 
 ```go
-func (m *mixer) add(c cue, strike bool) {
-	start := m.pos + int64(math.Round(c.at*rate))
+func (m *mixer) add(origin int64, c cue, strike bool) {
+	start := origin + int64(math.Round(c.at*rate))
 	m.voices = append(m.voices, voice{samples: c.samples, start: start, strike: strike})
 }
 ```
@@ -501,6 +508,19 @@ oto's goroutine calls `Read` whenever its buffer runs low, asking for `playerFra
 
 	m.voices = kept
 	m.pos = end
+	m.observe(time.Now())
+```
+
+`observe` takes a bearing on the wall clock: how far the frames handed over run ahead of the time since the first read. Reads come in bursts and some run late, but the furthest bearing holds steady. It eases back a frame a read to follow the device's clock as it drifts. A read more than `stall` behind it means the device stalled, and that read becomes the bearing. `frame` turns a wall-clock instant into the frame that answers to it, using that bearing plus `aim`, a 20 ms margin so a timer that fires a little late still finds its frame not yet handed over:
+
+`main.go` — `mixer.frame`
+
+```go
+	if m.epoch.IsZero() {
+		return m.pos
+	}
+
+	return int64(math.Round(when.Sub(m.epoch).Seconds()*rate + m.ahead + aim*rate))
 ```
 
 Then it clips the mono sum to [-1, 1] and writes each sample to both channels as little-endian float32:

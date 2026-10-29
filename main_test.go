@@ -222,27 +222,27 @@ func TestMixer(t *testing.T) {
 		{
 			name: "overlapping voices add",
 			setup: func(m *mixer) {
-				m.schedule([]float32{0.1, 0.1, 0.1}, 0)
-				m.schedule([]float32{0.2, 0.2}, 1.0/rate)
+				m.schedule(0, []float32{0.1, 0.1, 0.1})
+				m.schedule(1, []float32{0.2, 0.2})
 			},
 			want: []float32{0.1, 0.3, 0.3, 0, 0},
 		},
 		{
 			name: "replace cuts short only the strike",
 			setup: func(m *mixer) {
-				m.schedule([]float32{0.1, 0.1}, 0)
-				m.replace([]cue{{samples: []float32{0.5, 0.5}, at: 0}})
-				m.replace([]cue{{samples: []float32{0.2}, at: 1.0 / rate}})
+				m.schedule(0, []float32{0.1, 0.1})
+				m.replace(0, []cue{{samples: []float32{0.5, 0.5}, at: 0}})
+				m.replace(1, []cue{{samples: []float32{0.2}, at: 0}})
 			},
 			want: []float32{0.1, 0.3, 0, 0, 0},
 		},
 		{
 			name: "loud sums clip",
 			setup: func(m *mixer) {
-				m.schedule([]float32{0.8}, 0)
-				m.schedule([]float32{0.8}, 0)
-				m.schedule([]float32{-0.9, -0.9}, 2.0/rate)
-				m.schedule([]float32{-0.9, -0.9}, 2.0/rate)
+				m.schedule(0, []float32{0.8})
+				m.schedule(0, []float32{0.8})
+				m.schedule(2, []float32{-0.9, -0.9})
+				m.schedule(2, []float32{-0.9, -0.9})
 			},
 			want: []float32{1, 0, -1, -1, 0},
 		},
@@ -270,7 +270,7 @@ func TestMixerSpansReads(t *testing.T) {
 	t.Parallel()
 
 	mix := &mixer{}
-	mix.schedule([]float32{0.1, 0.2, 0.3, 0.4}, 1.0/rate)
+	mix.schedule(1, []float32{0.1, 0.2, 0.3, 0.4})
 
 	if got := frames(t, mix, 3); !equal(got, []float32{0, 0.1, 0.2}) {
 		t.Fatalf("first read %v", got)
@@ -284,11 +284,110 @@ func TestMixerSpansReads(t *testing.T) {
 		t.Fatalf("second read %v", got)
 	}
 
-	// A sound scheduled now starts at the mixer's current frame.
-	mix.schedule([]float32{0.5}, 0)
+	// A sound scheduled for a frame handed over already starts now.
+	mix.schedule(0, []float32{0.5})
 
 	if got := frames(t, mix, 1); !equal(got, []float32{0.5}) {
 		t.Fatalf("third read %v", got)
+	}
+}
+
+// device reads mix as oto does, a player buffer at a time, each read up to
+// 30 ms late, on a clock that runs slow by drift.
+type device struct {
+	mix   *mixer
+	start time.Time
+	drift float64
+	reads int
+}
+
+// until hands over every read due before when, and returns the time of the
+// last one.
+func (d *device) until(when time.Time) time.Time {
+	var now time.Time
+
+	for {
+		due := float64(d.reads*playerFrames) / (rate * (1 - d.drift))
+		late := float64(d.reads*7919%30) / 1000
+
+		next := d.start.Add(time.Duration((due + late) * float64(time.Second)))
+		if !next.Before(when) {
+			return now
+		}
+
+		now = next
+		d.reads++
+		d.mix.pos += playerFrames
+		d.mix.observe(now)
+	}
+}
+
+func TestFrameKeepsTheSecond(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		drift float64
+	}{
+		{name: "steady", drift: 0},
+		{name: "slow device", drift: 1e-4},
+		{name: "fast device", drift: -1e-4},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			dev := &device{mix: &mixer{}, start: start, drift: tc.drift}
+
+			var last int64
+
+			for second := 1; second <= 600; second++ {
+				// The timer fires a few milliseconds after the second.
+				at := start.Add(time.Duration(second) * time.Second)
+				dev.until(at.Add(3 * time.Millisecond))
+
+				got := dev.mix.frame(at)
+				if got < dev.mix.pos {
+					t.Fatalf("second %d placed at frame %d, handed over already to %d", second, got, dev.mix.pos)
+				}
+
+				// A beat may stray from the device's second by a millisecond.
+				want := rate * (1 - tc.drift)
+				if second > 1 && math.Abs(float64(got-last)-want) > rate/1000 {
+					t.Fatalf("second %d sounds %d frames after the last, want %.0f", second, got-last, want)
+				}
+
+				last = got
+			}
+		})
+	}
+}
+
+func TestFrameRebearsAfterStall(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mix := &mixer{}
+	now := (&device{mix: mix, start: start}).until(start.Add(3 * time.Second))
+
+	// The device stops for five seconds, then reads again.
+	now = now.Add(5 * time.Second)
+	mix.pos += playerFrames
+	mix.observe(now)
+
+	if got, want := mix.frame(now), mix.pos+int64(aim*rate); got != want {
+		t.Fatalf("after a stall the present is frame %d, want %d", got, want)
+	}
+}
+
+func TestFrameBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	mix := &mixer{pos: 7}
+	if got := mix.frame(time.Now()); got != 7 {
+		t.Fatalf("unread mixer placed now at frame %d, want 7", got)
 	}
 }
 
@@ -340,16 +439,16 @@ func TestPerformCutsShort(t *testing.T) {
 	}
 
 	mix := &mixer{}
-	mix.schedule(snd.tic, 0)
-	perform(mix, &snd, 4, 12)
-	perform(mix, &snd, 1, 0)
+	mix.schedule(0, snd.tic)
+	perform(mix, &snd, 0, 4, 12)
+	perform(mix, &snd, 0, 1, 0)
 
 	if want := 1 + 4; len(mix.voices) != want {
 		t.Fatalf("%d voices, want %d", len(mix.voices), want)
 	}
 
 	// The cuckoo waits for the hour's chime to ring out and the doors to open.
-	perform(mix, &snd, 4, 1)
+	perform(mix, &snd, 0, 4, 1)
 
 	_, total := quarter(4)
 	call := mix.voices[len(mix.voices)-1]
@@ -388,7 +487,7 @@ func TestPerformHoldsTogetherWhileRead(t *testing.T) {
 		}
 	}()
 
-	perform(mix, &snd, 4, 12)
+	perform(mix, &snd, 0, 4, 12)
 	close(done)
 	<-stopped
 
@@ -434,16 +533,21 @@ func TestListen(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Give oto a moment to read, so the beats are placed by the wall clock.
+	time.Sleep(time.Second / 4)
+
+	start := time.Now()
+
 	for beat := range 4 {
 		sound := snd.tic
 		if beat%2 == 1 {
 			sound = snd.tok
 		}
 
-		mix.schedule(sound, float64(beat))
+		mix.schedule(mix.frame(start.Add(time.Duration(beat)*time.Second)), sound)
 	}
 
-	perform(mix, &snd, 4, 3)
+	perform(mix, &snd, mix.frame(start), 4, 3)
 
 	_, total := quarter(4)
 	time.Sleep(time.Duration((total + doorSeconds + 3*(callSeconds+callGap) + 1) * float64(time.Second)))
