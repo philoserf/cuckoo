@@ -239,13 +239,13 @@ func TestMixer(t *testing.T) {
 			want: []float32{0.1, 0.3, 0.3, 0, 0},
 		},
 		{
-			name: "cancel removes only its group",
+			name: "replace cuts short only its group",
 			setup: func(m *mixer) {
 				m.schedule([]float32{0.1, 0.1}, 0, groupTick)
 				m.schedule([]float32{0.5, 0.5}, 0, groupStrike)
-				m.cancel(groupStrike)
+				m.replace(groupStrike, []cue{{samples: []float32{0.2}, at: 1.0 / rate}})
 			},
-			want: []float32{0.1, 0.1, 0, 0, 0},
+			want: []float32{0.1, 0.3, 0, 0, 0},
 		},
 		{
 			name: "loud sums clip",
@@ -367,6 +367,58 @@ func TestPerformCutsShort(t *testing.T) {
 
 	if want := int64(math.Round((total + doorSeconds + callLead) * rate)); call.start != want {
 		t.Fatalf("cuckoo starts at frame %d, want %d", call.start, want)
+	}
+}
+
+func TestPerformHoldsTogetherWhileRead(t *testing.T) {
+	t.Parallel()
+
+	snd, err := loadSounds()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The mixer is read one frame at a time throughout, so its clock moves
+	// while the strike is being laid out.
+	mix := &mixer{}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+
+	go func() {
+		defer close(stopped)
+
+		buf := make([]byte, bytesPerFrame)
+
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_, _ = mix.Read(buf)
+			}
+		}
+	}()
+
+	perform(mix, &snd, 4, 12)
+	close(done)
+	<-stopped
+
+	// Every note must place the strike's start on the same frame.
+	notes, _ := quarter(4)
+
+	var origin int64
+
+	for i, n := range notes {
+		got := mix.voices[i].start - int64(math.Round(n.at*rate))
+		if i == 0 {
+			origin = got
+
+			continue
+		}
+
+		if got != origin {
+			t.Fatalf("note %d puts the strike at frame %d, note 0 at %d", i, got, origin)
+		}
 	}
 }
 
