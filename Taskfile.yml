@@ -1,0 +1,164 @@
+# The gate. There is no CI: this is the whole check, and it runs only when
+# someone runs it, so a check left out of it is not run anywhere.
+#
+# The toolchain is deliberately unpinned. The gate is meant to fail when a
+# tool moves rather than drift behind it, so a red gate on code you did not
+# touch is the signal working. Answer the finding; do not pin a tool or add
+# a linter disable to silence it.
+version: "3"
+
+vars:
+  PROFILE: coverage.out
+  COUNTS: coverage.counts.out
+  RATCHET: coverage.ratchet
+
+  # Uncovered statements per package, read from the raw coverage profile.
+  #
+  # A profile line is "import/path/file.go:span statements executions"; a block
+  # that executed zero times contributes its statement count to its package.
+  # Every package the profile mentions is printed, including those with nothing
+  # uncovered, so a package that stops being tested shows as a changed line
+  # rather than a silent absence.
+  #
+  # A block can appear more than once: under -coverpkg every test binary
+  # instruments every package, so the same statement is reported by each binary
+  # that linked it -- covered by the one whose tests reach it, uncovered by the
+  # rest. Executions are summed per block before anything is called uncovered.
+  # This repository does not use -coverpkg, but the program is the one the
+  # other Go repositories run, and one program is easier to trust than three.
+  #
+  # LC_ALL=C because the output is checked in here and compared on a Linux
+  # runner, and the two collate a path separator differently.
+  #
+  # An integer count, not a percentage, and that is the whole point: a
+  # percentage holds still while a guarded branch adds one covered statement
+  # and one uncovered, and it grows more forgiving as the repository grows.
+  UNCOVERED: >-
+    awk 'NR>1 { split($1,a,":"); n=split(a[1],p,"/"); d=p[1];
+    for (i=2; i<n; i++) d = d "/" p[i];
+    pkg[$1]=d; stmts[$1]=$2; runs[$1]+=$3; seen[d]=1 }
+    END { for (b in runs) if (runs[b]==0) u[pkg[b]] += stmts[b];
+    for (d in seen) print d, u[d]+0 }' {{.PROFILE}} | LC_ALL=C sort
+
+tasks:
+  default:
+    desc: The whole gate, in the order a failure is cheapest to read
+    cmds:
+      - task: tidy
+      - task: vet
+      - task: lint
+      - task: docs
+      - task: nilaway
+      - task: vuln
+      - task: test
+      - task: ratchet
+
+  tidy:
+    desc: go.mod and go.sum are current
+    cmds:
+      - go mod tidy -diff
+
+  vet:
+    desc: go vet ./...
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: golangci-lint, which also reports any formatting difference
+    cmds:
+      # First, because a malformed .golangci.yml otherwise surfaces as a
+      # runtime linter error rather than a config error.
+      - golangci-lint config verify
+      - golangci-lint run ./...
+
+  docs:
+    desc: bun fmt, the single definition of formatted for everything that is not Go
+    cmds:
+      - |
+        bun fmt --check . || {
+          echo "" >&2
+          echo "Markdown, JSON or YAML formatting differs: task fix" >&2
+          exit 1
+        }
+
+  fix:
+    desc: Apply every autofix the enabled formatters and linters offer
+    # Not part of the gate: `lint` already reports everything this repairs.
+    # Read the diff before committing it.
+    cmds:
+      - golangci-lint run ./... --fix
+      - bun fmt --log-level warn .
+
+  nilaway:
+    desc: Flow-sensitive nil-dereference analysis with NilAway
+    cmds:
+      - nilaway ./...
+
+  vuln:
+    desc: Known vulnerabilities in the code this module actually calls, from govulncheck
+    cmds:
+      - govulncheck ./...
+
+  test:
+    desc: The suite, with the race detector, writing a coverage profile
+    # Once per invocation: `default` runs the suite and then `ratchet`, which
+    # depends on it.
+    run: once
+    cmds:
+      - go test -race -covermode=atomic -coverprofile={{.PROFILE}} ./...
+
+  listen:
+    desc: Play the hour through the speakers, without waiting for one
+    cmds:
+      - CUCKOO_LISTEN=1 go test -run Listen -count=1 .
+
+  ratchet:
+    desc: Uncovered statements per package have not moved
+    # A failure here is often not lost coverage. Blank lines split coverage
+    # blocks, so a reflow or an extracted helper moves these counts without
+    # changing what the tests reach. Read the diff first.
+    deps: [test]
+    cmds:
+      - |
+        {{.UNCOVERED}} > {{.COUNTS}}
+        grep -v '^#' {{.RATCHET}} | diff - {{.COUNTS}} || {
+          echo "" >&2
+          echo "coverage moved. If that was deliberate: task ratchet:update" >&2
+          exit 1
+        }
+        echo "ratchet holds: $(wc -l < {{.COUNTS}} | tr -d ' ') packages"
+
+  ratchet:update:
+    desc: Record the current uncovered-statement counts
+    deps: [test]
+    cmds:
+      - |
+        {
+          echo "# Uncovered statements per package. The gate fails in both directions:"
+          echo "# a number that rises is lost coverage, one that falls is coverage to lock in."
+          echo "# Regenerate with: task ratchet:update"
+          {{.UNCOVERED}}
+        } > {{.RATCHET}}
+        cat {{.RATCHET}}
+
+  build:
+    desc: Build the command
+    cmds:
+      - go build -o bin/cuckoo .
+
+  run:
+    desc: Run the clock (task run -- --quiet)
+    cmds:
+      - go run . {{.CLI_ARGS}}
+
+  setup:
+    desc: Install the development toolchain
+    cmds:
+      - brew bundle install --file=Brewfile
+      # nilaway publishes no formula; `go install` is its supported path.
+      - go install go.uber.org/nilaway/cmd/nilaway@latest
+
+  clean:
+    desc: Remove build and coverage artifacts
+    cmds:
+      - rm -rf bin {{.PROFILE}} {{.COUNTS}}

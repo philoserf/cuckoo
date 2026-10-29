@@ -1,0 +1,9 @@
+# Local scratch: .issues/ is written by the code-* skills. bun fmt reads this
+# repo's .gitignore but not the global core.excludesfile, which is where it is
+# ignored -- so git hides it and bun fmt would not.
+.issues/
+.golangci.yml
+
+# The varnamelen ignore list is a commented YAML flow sequence; bun fmt would
+# explode it to one entry per line and lose the grouping.
+.golangci.yml

@@ -1,0 +1,6 @@
+# Binaries
+bin/
+*.test
+
+# Coverage
+*.out
