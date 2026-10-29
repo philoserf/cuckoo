@@ -1,4 +1,4 @@
 # Uncovered statements per package. The gate fails in both directions:
 # a number that rises is lost coverage, one that falls is coverage to lock in.
 # Regenerate with: task ratchet:update
-github.com/philoserf/cuckoo 31
+github.com/philoserf/cuckoo 32

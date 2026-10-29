@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -94,6 +95,10 @@ func run(quiet bool) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
+			// oto closes a player once it is collected, so it must stay
+			// reachable for as long as the clock runs.
+			runtime.KeepAlive(player)
 
 			return nil
 		case at := <-timer.C:
