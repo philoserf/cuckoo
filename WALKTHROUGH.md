@@ -20,7 +20,7 @@ The program is one file, `main.go`, in `package main`, and its parts line up wit
 
 Data flows one way: wall time → striker → layout → mixer → oto → speaker. There are two clocks. The wall clock decides what to play, and the mixer's count of frames handed to oto decides when it plays.
 
-`main_test.go` covers everything below the device: striker sequences, quarter layouts, sound lengths and peaks, mixer arithmetic, and `tick` and `perform`. `run` and `main` are the untested part, and the coverage ratchet in `coverage.ratchet` holds exactly their statements as uncovered.
+`main_test.go` covers everything below the device: striker sequences, quarter layouts, sound lengths and peaks, mixer arithmetic, and `tick` and `perform`. `main`, `run` and `openPlayer` are the untested part, the only code that opens a device, and the coverage ratchet in `coverage.ratchet` holds exactly their statements as uncovered.
 
 ## Core walkthrough
 
@@ -169,42 +169,75 @@ The cuckoo's call is the one recorded sound. `decodeCall` decodes the embedded m
 
 ```go
 	if decoder.SampleRate() != rate {
-		return nil, errSampleRate
+		return nil, fmt.Errorf("%w: got %d Hz", errSampleRate, decoder.SampleRate())
 	}
 	...
-	frames := min(len(stereo)/2, int(callSeconds*rate))
+	frames := min(len(pcm)/4, int(callSeconds*rate))
 	duration := float64(frames) / rate
 	release := max(0.06, duration-0.12)
 	out := make([]float32, frames)
+
+	for i := range out {
+		mono := (sample(pcm[4*i:]) + sample(pcm[4*i+2:])) / 2 / math.MaxInt16
+```
+
+go-mp3 always decodes to interleaved stereo, signed 16-bit little-endian, so each frame is four bytes: left, then right. `sample` reads one of them and does the sign by arithmetic rather than an `int16` conversion:
+
+`main.go` — `sample`
+
+```go
+func sample(b []byte) float64 {
+	v := float64(binary.LittleEndian.Uint16(b))
+	if v >= 1<<15 {
+		v -= 1 << 16
+	}
+
+	return v
+}
 ```
 
 ### Opening the device
 
-Back in `run`, the sounds are ready and the device opens. The format here, stereo float32 at `rate`, is what `mixer.Read` writes, and `bytesPerFrame` (8) is its size per frame. `TestListen` repeats this setup line for line.
+Back in `run`, the sounds are ready. `run` creates the mixer and hands it to `openPlayer`, which `TestListen` also calls, so `task listen` plays exactly what the clock plays.
 
 `main.go` — `run`
 
 ```go
+	mix := &mixer{}
+
+	audio, player, err := openPlayer(mix)
+	if err != nil {
+		return err
+	}
+```
+
+`openPlayer` opens the device in the format `mixer.Read` writes: `channels` (2) of float32 at `rate`, so `bytesPerFrame` is `channels * 4`.
+
+`main.go` — `openPlayer`
+
+```go
+func openPlayer(mix *mixer) (*oto.Context, *oto.Player, error) {
 	audio, ready, err := oto.NewContext(&oto.NewContextOptions{
 		SampleRate:   rate,
-		ChannelCount: 2,
+		ChannelCount: channels,
 		Format:       oto.FormatFloat32LE,
 	})
 	if err != nil {
-		return fmt.Errorf("open audio: %w", err)
+		return nil, nil, fmt.Errorf("open audio: %w", err)
 	}
 
 	<-ready
 
-	mix := &mixer{}
 	player := audio.NewPlayer(mix)
-	// oto would otherwise read half a second at a time, so a sound
-	// scheduled now would be heard up to a second late.
+	...
 	player.SetBufferSize(playerFrames * bytesPerFrame)
 	player.Play()
+
+	return audio, player, nil
+}
 ```
 
-The player reads from the mixer for as long as the program runs. `SetBufferSize` sets how much oto asks for in each read: `playerFrames` (2048 frames, about 46 ms). That size is the grid every sound lands on, because the mixer's clock only moves when oto reads.
+The player reads from the mixer for as long as the program runs. `SetBufferSize` sets how much oto asks for in each read: `playerFrames` (2048 frames, about 46 ms). That size is the grid every sound lands on, because the mixer's clock only moves when oto reads. With oto's own queue and the macOS AudioQueue behind it, a sound is heard roughly 0.1–0.23 s after it is scheduled. oto closes a player once it is garbage collected, so `openPlayer` returns it and leaves keeping it alive to the caller.
 
 ### Taking bearings and starting the loop
 
@@ -230,12 +263,24 @@ The player reads from the mixer for as long as the program runs. `SetBufferSize`
 
 			return nil
 		case at := <-timer.C:
+			// oto's errors are fatal: a failed device never plays again, so
+			// exit rather than keep time in silence.
+			err := errors.Join(audio.Err(), player.Err())
+			if err != nil {
+				return fmt.Errorf("audio: %w", err)
+			}
+
 			tick(mix, &snd, clock, at, quiet)
 		}
 	}
 ```
 
-Each pass sets a fresh timer for the next whole wall-clock second. It doesn't use a `time.Ticker`, so a late timer, a clock adjustment or a wake from sleep is corrected on the next pass. The `ctx.Done()` branch is the only way out, on Ctrl-C or SIGTERM. Its `runtime.KeepAlive(player)` is what keeps the player reachable until then: oto closes a player once the garbage collector reclaims it.
+Each pass sets a fresh timer for the next whole wall-clock second. It doesn't use a `time.Ticker`, so a late timer, a clock adjustment or a wake from sleep is corrected on the next pass.
+
+There are two ways out:
+
+- **Ctrl-C or SIGTERM** cancels `ctx`. Its branch calls `runtime.KeepAlive(player)`, which is what keeps the player reachable until then.
+- **A failed audio device.** Each second, before ticking, the loop asks oto whether the context or player has failed. oto documents those errors as fatal, so `run` returns the error and `main` prints it and exits 1. The clock never keeps time in silence.
 
 ### One second: `tick`
 
@@ -251,7 +296,7 @@ func tick(mix *mixer, snd *sounds, clock *striker, at time.Time, quiet bool) {
 			beat = snd.tok
 		}
 
-		mix.schedule(beat, 0, groupTick)
+		mix.schedule(beat, 0)
 	}
 
 	chimes, cuckoos := clock.strike(at)
@@ -265,19 +310,19 @@ The `chimes > 0` guard matters. Every strike replaces any strike still sounding,
 
 ### Deciding what to strike: `striker.strike`
 
-The striker carries two pieces of state. `opened` records that the first reading has happened. `held` remembers the quarter boundary last struck (or held at startup) as "hour:minute".
+The striker carries two pieces of state. `opened` records that the first reading has happened. `held` remembers the quarter boundary last struck (or held at startup) as minutes since midnight, `-1` when none is held.
 
 `main.go` — `striker.strike`
 
 ```go
 	hour, minute, second := at.Clock()
 	boundary := second == 0 && minute%15 == 0
-	key := strconv.Itoa(hour) + ":" + strconv.Itoa(minute)
+	key := hour*60 + minute
 
 	switch {
 	case !s.opened:
 		s.opened = true
-		s.held = ""
+		s.held = -1
 
 		if boundary {
 			s.held = key
@@ -285,7 +330,7 @@ The striker carries two pieces of state. `opened` records that the first reading
 
 		return 0, 0
 	case !boundary:
-		s.held = ""
+		s.held = -1
 
 		return 0, 0
 	case s.held == key:
@@ -345,11 +390,11 @@ func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
 		strike = append(strike, cue{samples: snd.call, at: at})
 	}
 
-	mix.replace(groupStrike, strike)
+	mix.replace(strike)
 }
 ```
 
-`quarter` holds the Westminster chime as data: five phrases of four rods, and which phrases each quarter plays.
+`quarter` holds the Westminster chime as data: five phrases of four rods, and which phrases each quarter plays. It takes the 1–4 quarters the striker reports.
 
 `main.go` — `quarter`
 
@@ -363,7 +408,7 @@ func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
 	}
 	quarters := [][]int{{0}, {1, 2}, {3, 4, 0}, {1, 2, 3, 4}}
 	...
-	for p, phrase := range quarters[min(count, len(quarters))-1] {
+	for p, phrase := range quarters[count-1] {
 		for n, rod := range phrases[phrase] {
 			last = float64(p)*phraseSeconds + float64(n)*noteSeconds
 			notes = append(notes, note{at: chimeLead + last, rod: rod})
@@ -397,19 +442,19 @@ For the hour, the cuckoo waits for the chime to ring out, then for `doorSeconds`
 
 ### Scheduling: `mixer.replace`, `schedule` and `add`
 
-A `cue` is a sound and a start time in seconds from the mixer's clock. Once scheduled, it becomes a `voice` with an absolute start frame and a group.
+A `cue` is a sound and a start time in seconds from the mixer's clock. Once scheduled, it becomes a `voice` with an absolute start frame and a `strike` flag.
 
 `main.go` — `mixer.replace`
 
 ```go
-func (m *mixer) replace(group int, cues []cue) {
+func (m *mixer) replace(cues []cue) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	kept := m.voices[:0]
 
 	for _, v := range m.voices {
-		if v.group != group {
+		if !v.strike {
 			kept = append(kept, v)
 		}
 	}
@@ -417,19 +462,19 @@ func (m *mixer) replace(group int, cues []cue) {
 	m.voices = kept
 
 	for _, c := range cues {
-		m.add(c, group)
+		m.add(c, true)
 	}
 }
 ```
 
-`replace` drops every voice in the group, cutting short a strike still sounding, and places the new cues, all under one lock. Every cue is measured from the same `m.pos`, so oto can't read between two notes and push the rest of the strike late. `schedule`, used for the beat, places a single cue the same way. Both convert seconds to an absolute frame in `add`:
+`replace` drops every strike voice, cutting short a strike still sounding, and places the new cues, all under one lock. Every cue is measured from the same `m.pos`, so oto can't read between two notes and push the rest of the strike late. `schedule`, used for the beat, places a single cue the same way. Both convert seconds to an absolute frame in `add`:
 
 `main.go` — `mixer.add`
 
 ```go
-func (m *mixer) add(c cue, group int) {
+func (m *mixer) add(c cue, strike bool) {
 	start := m.pos + int64(math.Round(c.at*rate))
-	m.voices = append(m.voices, voice{samples: c.samples, start: start, group: group})
+	m.voices = append(m.voices, voice{samples: c.samples, start: start, strike: strike})
 }
 ```
 
@@ -477,3 +522,5 @@ Then it clips the mono sum to [-1, 1] and writes each sample to both channels as
 ### Shutting down
 
 On Ctrl-C or SIGTERM, `signal.NotifyContext` cancels `ctx`. The loop stops its pending timer and holds the player one last time with `runtime.KeepAlive`, then `run` returns `nil`. Any sound still sounding is cut off as the process exits.
+
+If the audio device fails instead, the loop's error check returns `audio: …` from `run`, and `main` prints `cuckoo: audio: …` to stderr and exits 1.

@@ -1,6 +1,6 @@
 # cuckoo
 
-A cuckoo clock for the terminal, heard and not seen. It keeps the computer's local time and prints nothing.
+A cuckoo clock for the terminal, heard and not seen. It keeps the computer's local time and prints nothing, unless the audio device fails: then it says so and exits.
 
 ```sh
 go install github.com/philoserf/cuckoo@latest

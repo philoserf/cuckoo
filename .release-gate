@@ -1,0 +1,4 @@
+# Release profile overrides for release-gate and release-ship.
+# Go module versions need the v prefix: go install ...@v0.1.0, and @latest
+# resolves only to v-prefixed semver tags.
+TAG_PREFIX=v
