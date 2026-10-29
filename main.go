@@ -177,18 +177,20 @@ func (s *striker) strike(at time.Time) (int, int) {
 // perform schedules a strike, cutting short any strike still sounding. The
 // cuckoo waits for the chime to ring out and the doors to open.
 func perform(mix *mixer, snd *sounds, chimes, cuckoos int) {
-	mix.cancel(groupStrike)
-
 	notes, total := quarter(chimes)
+	strike := make([]cue, 0, len(notes)+cuckoos)
+
 	for _, n := range notes {
-		mix.schedule(snd.rods[n.rod], n.at, groupStrike)
+		strike = append(strike, cue{samples: snd.rods[n.rod], at: n.at})
 	}
 
 	start := total + doorSeconds
 	for call := range cuckoos {
 		at := start + callLead + float64(call)*(float64(len(snd.call))/rate+callGap)
-		mix.schedule(snd.call, at, groupStrike)
+		strike = append(strike, cue{samples: snd.call, at: at})
 	}
+
+	mix.replace(groupStrike, strike)
 }
 
 // note is one strike of a chime rod, at seconds from the start of a quarter.
@@ -384,6 +386,12 @@ func decodeCall(data []byte) ([]float32, error) {
 	return out, nil
 }
 
+// cue is a sound to schedule, at seconds from the mixer's clock.
+type cue struct {
+	samples []float32
+	at      float64
+}
+
 type voice struct {
 	samples []float32
 	start   int64
@@ -442,11 +450,13 @@ func (m *mixer) schedule(samples []float32, at float64, group int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	start := m.pos + int64(math.Round(at*rate))
-	m.voices = append(m.voices, voice{samples: samples, start: start, group: group})
+	m.add(cue{samples: samples, at: at}, group)
 }
 
-func (m *mixer) cancel(group int) {
+// replace cuts short everything sounding in group and schedules cues in its
+// place. It holds the lock throughout, so every cue is placed against the
+// same frame and no Read can land between them.
+func (m *mixer) replace(group int, cues []cue) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -459,4 +469,15 @@ func (m *mixer) cancel(group int) {
 	}
 
 	m.voices = kept
+
+	for _, c := range cues {
+		m.add(c, group)
+	}
+}
+
+// add places a cue at seconds from the mixer's clock. The caller holds the
+// lock.
+func (m *mixer) add(c cue, group int) {
+	start := m.pos + int64(math.Round(c.at*rate))
+	m.voices = append(m.voices, voice{samples: c.samples, start: start, group: group})
 }
