@@ -232,8 +232,9 @@ type note struct {
 	rod int
 }
 
-// quarter lays out the Westminster phrases for a quarter: when each note
-// sounds, which rod it strikes, and when the last note has rung out.
+// quarter lays out the Westminster phrases for the count of quarters struck,
+// 1 to 4 as the striker reports them: when each note sounds, which rod it
+// strikes, and when the last note has rung out.
 func quarter(count int) ([]note, float64) {
 	phrases := [][]int{
 		{gSharp4, fSharp4, e4, b3},
@@ -244,16 +245,12 @@ func quarter(count int) ([]note, float64) {
 	}
 	quarters := [][]int{{0}, {1, 2}, {3, 4, 0}, {1, 2, 3, 4}}
 
-	if count <= 0 {
-		return nil, 0
-	}
-
 	var (
 		notes []note
 		last  float64
 	)
 
-	for p, phrase := range quarters[min(count, len(quarters))-1] {
+	for p, phrase := range quarters[count-1] {
 		for n, rod := range phrases[phrase] {
 			last = float64(p)*phraseSeconds + float64(n)*noteSeconds
 			notes = append(notes, note{at: chimeLead + last, rod: rod})
