@@ -1,3 +1,0 @@
-# The varnamelen ignore list is a commented YAML flow sequence; bun fmt would
-# explode it to one entry per line and lose the grouping.
-.golangci.yml
